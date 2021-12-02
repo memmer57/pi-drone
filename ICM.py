@@ -2,6 +2,8 @@ import time
 import smbus
 import math
 import statistics
+import socket
+import RPi.GPIO as GPIO
 
 #
 #    0     1
@@ -12,10 +14,15 @@ import statistics
 #    3     2
 #
 
+UDP_PORT = 5005
+UDP_IP = "10.0.0.44"
+
 KP = 0.005
 KI = 0.005
 
 motor = [0,0,0,0]
+motor_gpio = [38, 18, 13, 35]
+motor_control = []
 
 Gyro = [0,0,0]
 Accel = [0,0,0]
@@ -127,8 +134,33 @@ class ICM20948(object):
         self._write_byte(REG_ADD_REG_BANK_SEL, REG_VAL_REG_BANK_0)
         time.sleep(0.1)
         self.icm20948Offset()
+        self.setup_connection()
+        self.setup_motors()
 
-    
+    def setup_connection(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((UDP_IP, UDP_PORT))
+
+    def setup_motors(self):
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BOARD)
+        y = 0
+        for i in motor_gpio:
+            GPIO.setup(i, GPIO.OUT)
+            motor_control.append(GPIO.PWM(i, 50))
+            motor_control[y].start(0)
+            y += 1
+        time.sleep(3)
+        for i in motor_control:
+            i.ChangeDutyCycle(3)
+        i = 4
+        while i<4.7:
+            for y in motor_control:
+                y.ChangeDutyCycle(i)
+            print(i)
+            time.sleep(0.1)
+            i += 0.02
+
     def icm20948_Gyro_Accel_Read(self):
         data = self._read_block(REG_ADD_ACCEL_XOUT_H, 12)
         Accel[0] = data[0] << 8 | data[1]
@@ -318,8 +350,10 @@ if __name__ == '__main__':
         x = icm.pid(delta_t, 0, 0.0, KP, KI)
         y = icm.pid(delta_t, 1, 0.0, KP, KI)
         z = icm.pid(delta_t, 2, 0.0, KP, KI)
-        motor[0] = 7.5 + x
-        motor[2] = 7.5 - x
+        motor[0] = 5 + x
+        motor[2] = 5 - x
         print(motor)
+        motor_control[0].ChangeDutyCycle(motor[0])
+        motor_control[2].ChangeDutyCycle(motor[2])
         i += 1
         last_update = time.perf_counter()
