@@ -4,6 +4,8 @@ import math
 import statistics
 import socket
 import RPi.GPIO as GPIO
+from multiprocessing import Process
+import threading
 
 #
 #    0     1
@@ -14,15 +16,15 @@ import RPi.GPIO as GPIO
 #    3     2
 #
 
-UDP_PORT = 5005
-UDP_IP = "10.0.0.44"
 
-KP = 0.005
-KI = 0.005
+KP = 0.006
+KI = 0.01
 
 motor = [0,0,0,0]
 motor_gpio = [38, 18, 13, 35]
 motor_control = []
+
+gamepad_output = [0,0,0,0]
 
 Gyro = [0,0,0]
 Accel = [0,0,0]
@@ -134,12 +136,20 @@ class ICM20948(object):
         self._write_byte(REG_ADD_REG_BANK_SEL, REG_VAL_REG_BANK_0)
         time.sleep(0.1)
         self.icm20948Offset()
-        self.setup_connection()
+        x = threading.Thread(target=self.read_gamepad)
+        x.start()
         self.setup_motors()
-
-    def setup_connection(self):
+    
+    def read_gamepad(self):
+        UDP_IP = "10.0.0.44"
+        UDP_PORT = 5005
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind((UDP_IP, UDP_PORT))
+        while True:
+            data, addr = sock.recvfrom(1024)
+            value = data.decode('utf-8').split()
+            gamepad_output[0] = float(value[0])
+            gamepad_output[1] = float(value[1])
 
     def setup_motors(self):
         GPIO.setwarnings(False)
@@ -339,7 +349,10 @@ class ICM20948(object):
 
 if __name__ == '__main__':
     icm=ICM20948()
-    i = 0
+    #p = Process(target=icm.read_gamepad)
+    #p.start()
+    #p.join()
+    iteration = 0
     min = 0
     max = 0
     delta_t = 0
@@ -347,13 +360,20 @@ if __name__ == '__main__':
     while True: 
         icm.Calculate(delta_t)
         delta_t = time.perf_counter() - last_update  
-        x = icm.pid(delta_t, 0, 0.0, KP, KI)
+        x = icm.pid(delta_t, 0, gamepad_output[1]*40, KP, KI)
         y = icm.pid(delta_t, 1, 0.0, KP, KI)
         z = icm.pid(delta_t, 2, 0.0, KP, KI)
-        motor[0] = 5 + x
-        motor[2] = 5 - x
-        print(motor)
+        thrust = gamepad_output[0]
+        motor[0] = thrust + x
+        motor[2] = thrust - x
+        for i in range(len(motor)):
+            if motor[i] > 10:
+                motor[i] = 10
+            elif motor[i] < 5:
+                motor[i] = 5
         motor_control[0].ChangeDutyCycle(motor[0])
         motor_control[2].ChangeDutyCycle(motor[2])
-        i += 1
+        if iteration%100 == 0:
+            print(motor[0], motor[2])
+        iteration += 1
         last_update = time.perf_counter()
