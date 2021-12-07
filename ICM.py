@@ -18,7 +18,7 @@ import threading
 
 
 KP = 0.006
-KI = 0.01
+KI = 0.004
 
 motor = [0,0,0,0]
 motor_gpio = [38, 18, 13, 35]
@@ -40,7 +40,8 @@ Angles = [0,0,0]
 GyroOffset = [0,0,0]
 AccelOffset = [0,0,0]
 
-pid_integral = [0,0,0]
+rate_pid_integral = [0,0,0]
+angle_pid_integral = [0,0,0]
 
 GyroSensitivity = 32.8
 AccelSensitivity = 4096
@@ -116,8 +117,8 @@ REG_ADD_I2C_SLV1_REG = 0x08
 REG_ADD_I2C_SLV1_CTRL = 0x09
 REG_ADD_I2C_SLV1_DO = 0x0A
 
-class ICM20948(object):
-    
+# ICM20948
+class ICM(object): 
     def __init__(self,address=I2C_ADD_ICM20948):
         self._address = address
         self._bus = smbus.SMBus(1)
@@ -150,6 +151,7 @@ class ICM20948(object):
             value = data.decode('utf-8').split()
             gamepad_output[0] = float(value[0])
             gamepad_output[1] = float(value[1])
+
 
     def setup_motors(self):
         GPIO.setwarnings(False)
@@ -338,42 +340,55 @@ class ICM20948(object):
         self.Get_Angles(delta_time)
 
 
-    def pid(self, delta_time, axis, desired_pitch, KP, KI):
+    def Angle_PID(self, delta_time, axis, desired_angle, KP, KI):
+        error = desired_angle - Angles[axis]
+
+        proportional = KP * error
+        angle_pid_integral[axis] += KI * error * delta_time
+        
+        x = proportional + angle_pid_integral[axis]
+        return Rate_PID(delta_time, axis, x, KP, KI)
+
+
+    def Rate_PID(self, delta_time, axis, desired_pitch, KP, KI):
         error = desired_pitch - Gyro[axis]
         
         proportional = KP * error
-        pid_integral[axis] += KI * error * delta_time
+        rate_pid_integral[axis] += KI * error * delta_time
 
-        return proportional + pid_integral[axis]
+        return proportional + rate_pid_integral[axis]
 
 
 if __name__ == '__main__':
-    icm=ICM20948()
-    #p = Process(target=icm.read_gamepad)
-    #p.start()
-    #p.join()
+    icm = ICM()
     iteration = 0
-    min = 0
-    max = 0
     delta_t = 0
     last_update = time.perf_counter()
     while True: 
         icm.Calculate(delta_t)
         delta_t = time.perf_counter() - last_update  
-        x = icm.pid(delta_t, 0, gamepad_output[1]*40, KP, KI)
-        y = icm.pid(delta_t, 1, 0.0, KP, KI)
-        z = icm.pid(delta_t, 2, 0.0, KP, KI)
-        thrust = gamepad_output[0]
-        motor[0] = thrust + x
-        motor[2] = thrust - x
+
+        Thrust = gamepad_output[0] - 1
+        Roll = icm.Angle_PID(delta_t, 0, gamepad_output[1]*20, KP, KI)
+        Pitch = icm.Angle_PID(delta_t, 1, gamepad_output[2]*20, KP, KI)
+        Yaw = icm.Rate_PID(delta_t, 2, gamepad_output[3]*10, KP, KI)
+
+        motor[0] = Thrust + Roll - Pitch + Yaw
+        motor[1] = Thrust - Roll - Pitch - Yaw
+        motor[2] = Thrust - Roll + Pitch + Yaw
+        motor[3] = Thrust + Roll + Pitch - Yaw
+
         for i in range(len(motor)):
             if motor[i] > 10:
                 motor[i] = 10
             elif motor[i] < 5:
                 motor[i] = 5
-        motor_control[0].ChangeDutyCycle(motor[0])
-        motor_control[2].ChangeDutyCycle(motor[2])
+
+        for i in range(len(motor_control)):
+            motor_control[i].ChangeDutyCycle(motor[i])
+
         if iteration%100 == 0:
             print(motor[0], motor[2])
         iteration += 1
+
         last_update = time.perf_counter()
