@@ -17,8 +17,8 @@ import threading
 #
 
 
-KP = 0.006
-KI = 0.004
+KP = 0.004
+KI = 0.006
 
 motor = [0,0,0,0]
 motor_gpio = [38, 18, 13, 35]
@@ -37,8 +37,8 @@ GyroAngles = [0,0,0]
 AccelAngles = [0,0]
 Angles = [0,0,0]
 
-GyroOffset = [0,0,0]
-AccelOffset = [0,0,0]
+GyroOffset = [-4.43, 20.46 , -0.308]
+AccelOffset = [0.0075, -0.0368, -0.056]
 
 rate_pid_integral = [0,0,0]
 angle_pid_integral = [0,0,0]
@@ -136,11 +136,17 @@ class ICM(object):
         self._write_byte(REG_ADD_ACCEL_CONFIG, REG_VAL_BIT_ACCEL_DLPCFG_2 | REG_VAL_BIT_ACCEL_FS_8g | true)
         self._write_byte(REG_ADD_REG_BANK_SEL, REG_VAL_REG_BANK_0)
         time.sleep(0.1)
-        self.icm20948Offset()
+        #self.icm20948Offset()
         x = threading.Thread(target=self.read_gamepad)
         x.start()
         self.setup_motors()
     
+    def emergency_stop(self):
+        emergency_stop[0] = 1
+        for i in range(2):
+            for i in motor_control:
+                i.ChangeDutyCycle(3)
+
     def read_gamepad(self):
         UDP_IP = "10.0.0.44"
         UDP_PORT = 5005
@@ -148,9 +154,14 @@ class ICM(object):
         sock.bind((UDP_IP, UDP_PORT))
         while True:
             data, addr = sock.recvfrom(1024)
+            if data.encode('utf-8') == "stop":
+                self.emergency_stop()
+                break
             value = data.decode('utf-8').split()
             gamepad_output[0] = float(value[0])
             gamepad_output[1] = float(value[1])
+            gamepad_output[2] = float(value[2])
+            gamepad_output[3] = float(value[3])
 
 
     def setup_motors(self):
@@ -365,30 +376,46 @@ if __name__ == '__main__':
     delta_t = 0
     last_update = time.perf_counter()
     while True: 
-        icm.Calculate(delta_t)
-        delta_t = time.perf_counter() - last_update  
+        # Stop if emergency stop
+        if emergency_stop[0] == 1:
+            print("emergency stop")
+            break
 
+        # Calculate Read data and calculate angles
+        icm.Calculate(delta_t)
+
+        # Calculate delta time
+        delta_t = time.perf_counter() - last_update  
+        
+        # Calculate required thrust, roll, pitch and yaw
         Thrust = gamepad_output[0] - 1
-        Roll = icm.Angle_PID(delta_t, 0, gamepad_output[1]*20, KP, KI)
-        Pitch = icm.Angle_PID(delta_t, 1, gamepad_output[2]*20, KP, KI)
+        Roll = icm.Angle_PID(delta_t, 0, gamepad_output[1]*2, KP, KI)
+        Pitch = icm.Angle_PID(delta_t, 1, gamepad_output[2]*2, KP, KI)
         Yaw = icm.Rate_PID(delta_t, 2, gamepad_output[3]*10, KP, KI)
 
+        # Calculate thrust for each motor
         motor[0] = Thrust + Roll - Pitch + Yaw
         motor[1] = Thrust - Roll - Pitch - Yaw
         motor[2] = Thrust - Roll + Pitch + Yaw
         motor[3] = Thrust + Roll + Pitch - Yaw
 
+        # Avoid overflow
         for i in range(len(motor)):
             if motor[i] > 10:
                 motor[i] = 10
-            elif motor[i] < 5:
-                motor[i] = 5
+            elif motor[i] < 4.5:
+                motor[i] = 4.5
 
+        # Set thrust for each motor
         for i in range(len(motor_control)):
             motor_control[i].ChangeDutyCycle(motor[i])
 
+        # Print some data every couple of times
         if iteration%100 == 0:
-            print(motor[0], motor[2])
+            print(motor[0], motor[1])
+            print(motor[3], motor[2])
+            print("\n")
         iteration += 1
-
+        
+        # Set time of last update
         last_update = time.perf_counter()
