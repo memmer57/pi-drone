@@ -16,12 +16,25 @@ import threading
 #    3     2
 #
 
+emergency_stop = [0]
 
-KP = 0.004
-KI = 0.006
+KP_roll = 0.004
+KI_roll = 0.006
+KD_roll = 0.005
+
+KP_pitch = 0.004
+KI_pitch = 0.006
+KD_pitch = 0.005
+
+KP_yaw = 0.004
+KI_yaw = 0.006
+KD_yaw = 0.005
+
+GyroPrev = [0,0,0]
+GamepadPrev = [0,0,0]
 
 motor = [0,0,0,0]
-motor_gpio = [38, 18, 13, 35]
+motor_gpio = [38, 35, 13, 18]
 motor_control = []
 
 gamepad_output = [0,0,0,0]
@@ -37,8 +50,10 @@ GyroAngles = [0,0,0]
 AccelAngles = [0,0]
 Angles = [0,0,0]
 
-GyroOffset = [-4.43, 20.46 , -0.308]
-AccelOffset = [0.0075, -0.0368, -0.056]
+#GyroOffset = [-4.43, 20.46 , -0.308]
+#AccelOffset = [0.0075, -0.0368, -0.056]
+GyroOffset = [0,0,0]
+AccelOffset = [0,0,0]
 
 rate_pid_integral = [0,0,0]
 angle_pid_integral = [0,0,0]
@@ -136,7 +151,8 @@ class ICM(object):
         self._write_byte(REG_ADD_ACCEL_CONFIG, REG_VAL_BIT_ACCEL_DLPCFG_2 | REG_VAL_BIT_ACCEL_FS_8g | true)
         self._write_byte(REG_ADD_REG_BANK_SEL, REG_VAL_REG_BANK_0)
         time.sleep(0.1)
-        #self.icm20948Offset()
+        self.icm20948Offset()
+        time.sleep(2)
         x = threading.Thread(target=self.read_gamepad)
         x.start()
         self.setup_motors()
@@ -148,13 +164,13 @@ class ICM(object):
                 i.ChangeDutyCycle(3)
 
     def read_gamepad(self):
-        UDP_IP = "10.0.0.44"
+        UDP_IP = "10.42.0.209"
         UDP_PORT = 5005
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind((UDP_IP, UDP_PORT))
         while True:
             data, addr = sock.recvfrom(1024)
-            if data.encode('utf-8') == "stop":
+            if data.decode('utf-8') == "stop":
                 self.emergency_stop()
                 break
             value = data.decode('utf-8').split()
@@ -294,6 +310,7 @@ class ICM(object):
         AccelOffset[0] = Ax / samples
         AccelOffset[1] = Ay / samples
         AccelOffset[2] = Az / samples - 1
+        print("Calibrated")
 
     
     def _read_byte(self, cmd):
@@ -351,23 +368,23 @@ class ICM(object):
         self.Get_Angles(delta_time)
 
 
-    def Angle_PID(self, delta_time, axis, desired_angle, KP, KI):
+    def Angle_PID(self, delta_time, axis, desired_angle, KP, KI, KD):
         error = desired_angle - Angles[axis]
-
-        proportional = KP * error
-        angle_pid_integral[axis] += KI * error * delta_time
-        
-        x = proportional + angle_pid_integral[axis]
-        return Rate_PID(delta_time, axis, x, KP, KI)
+        error = error * 4
+        return self.Rate_PID(delta_time, axis, error, KP, KI, KD)
 
 
-    def Rate_PID(self, delta_time, axis, desired_pitch, KP, KI):
+    def Rate_PID(self, delta_time, axis, desired_pitch, KP, KI, KD):
         error = desired_pitch - Gyro[axis]
         
         proportional = KP * error
         rate_pid_integral[axis] += KI * error * delta_time
+        derivative = KD * (error - GyroPrev[axis] - GamepadPrev[axis])
 
-        return proportional + rate_pid_integral[axis]
+        GamepadPrev[axis] = desired_pitch
+        GyroPrev[axis] = Gyro[axis]
+
+        return proportional + rate_pid_integral[axis] + derivative
 
 
 if __name__ == '__main__':
@@ -388,30 +405,30 @@ if __name__ == '__main__':
         delta_t = time.perf_counter() - last_update  
         
         # Calculate required thrust, roll, pitch and yaw
-        Thrust = gamepad_output[0] - 1
-        Roll = icm.Angle_PID(delta_t, 0, gamepad_output[1]*2, KP, KI)
-        Pitch = icm.Angle_PID(delta_t, 1, gamepad_output[2]*2, KP, KI)
-        Yaw = icm.Rate_PID(delta_t, 2, gamepad_output[3]*10, KP, KI)
+        Thrust = gamepad_output[0]
+        Roll = icm.Angle_PID(delta_t, 0, gamepad_output[1], KP_roll, KI_roll, KD_roll)
+        Pitch = icm.Angle_PID(delta_t, 1, gamepad_output[2], KP_pitch, KI_pitch, KD_pitch)
+        Yaw = icm.Rate_PID(delta_t, 0, gamepad_output[3], KP_yaw, KI_yaw, KD_yaw)
 
         # Calculate thrust for each motor
-        motor[0] = Thrust + Roll - Pitch + Yaw
-        motor[1] = Thrust - Roll - Pitch - Yaw
-        motor[2] = Thrust - Roll + Pitch + Yaw
-        motor[3] = Thrust + Roll + Pitch - Yaw
+        motor[0] = Thrust + Roll - Pitch - Yaw
+        motor[1] = Thrust - Roll - Pitch + Yaw
+        motor[2] = Thrust - Roll + Pitch - Yaw
+        motor[3] = Thrust + Roll + Pitch + Yaw
 
         # Avoid overflow
         for i in range(len(motor)):
             if motor[i] > 10:
                 motor[i] = 10
-            elif motor[i] < 4.5:
-                motor[i] = 4.5
+            elif motor[i] < 5:
+                motor[i] = 5
 
         # Set thrust for each motor
         for i in range(len(motor_control)):
             motor_control[i].ChangeDutyCycle(motor[i])
 
         # Print some data every couple of times
-        if iteration%100 == 0:
+        if iteration%200 == 0:
             print(motor[0], motor[1])
             print(motor[3], motor[2])
             print("\n")
