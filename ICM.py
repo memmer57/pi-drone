@@ -398,12 +398,13 @@ if __name__ == '__main__':
             print("emergency stop")
             break
 
-        # Calculate Read data and calculate angles
-        icm.Calculate(delta_t)
-
-        # Calculate delta time
+        # Calculate delta time and set last update time
         delta_t = time.perf_counter() - last_update  
+        last_update = time.perf_counter()
         
+        # Calculate read data and angles
+        icm.Calculate(delta_t)
+       
         # Calculate required thrust, roll, pitch and yaw
         Thrust = gamepad_output[0]
         Roll = icm.Angle_PID(delta_t, 0, gamepad_output[1], KP_roll, KI_roll, KD_roll)
@@ -431,8 +432,6 @@ if __name__ == '__main__':
         if iteration%200 == 0:
             print(motor[0], motor[1])
             print(motor[3], motor[2])
+            print(Thrust, Roll, Pitch, Yaw)
             print("\n")
         iteration += 1
-        
-        # Set time of last update
-        last_update = time.perf_counter()
